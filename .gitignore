@@ -1,0 +1,12 @@
+# Rendered HTML (reproducible from .Rmd)
+*.html
+
+# R session artefacts
+.Rhistory
+.RData
+.Rproj.user/
+*.Rproj
+
+# OS artefacts
+.DS_Store
+Thumbs.db

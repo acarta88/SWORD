@@ -1,0 +1,484 @@
+---
+title: "SWORD -- Quick-Start Guide"
+author: "Carta A., Frigau L."
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+# SWORD & TORS -- Quick-Start Guide
+
+> **SWORD** = **S**upport vector machine **W**eighted **O**blique **R**andom **D**ecision forests
+> **TORS** = **T**ree via **O**blique **R**egression with **S**VM
+
+This document explains the main R functions provided in `SWORD_functions/`, shows how to call them, and describes every parameter. The companion script `quick_test_SWORD_TORS.R` runs a fully self-contained example on a simulated dataset.
+
+---
+
+## Table of Contents
+
+1. [Overview](#overview)
+2. [Required Packages](#required-packages)
+3. [Function Reference](#function-reference)
+   - [SWORD -- fit the forest](#sword--fit-the-forest)
+   - [TORS -- fit a single tree](#tors--fit-a-single-tree)
+   - [Prediction functions](#prediction-functions)
+   - [Variable Importance -- VI_SWORD](#variable-importance--vi_sword)
+   - [Utilities](#utilities)
+4. [Quick-Start Example](#quick-start-example)
+5. [Parameter Tuning Guide](#parameter-tuning-guide)
+6. [Output Structure](#output-structure)
+
+---
+
+## Overview
+
+SWORD is an **oblique random forest for regression**. At each internal node, a split is defined by a linear combination of predictors rather than a single feature threshold. The linear coefficients are obtained from a **Weighted Support Vector Machine (W-SVM)** with a linear kernel, where observation weights reflect how informative each point is for the local split.
+
+```
+Forest (SWORD)
+ `--> m bootstrap trees  -->  TORS (single oblique regression tree)
+                                `--> each node split: W-SVM linear combination
+                                       `--> weights: "scale" (mean/sd) or "robust" (median/MAD)
+```
+
+**Key ideas:**
+
+| Concept | Description |
+|---|---|
+| Oblique split | Split hyperplane = linear combination of selected predictors |
+| Feature selection per split | Only the top-`rf_var` predictors by correlation/MI to the response are considered |
+| Observation weighting | Each sample gets a weight based on its residual -- emphasises hard-to-fit observations |
+| Variable importance | OIW-VI: aggregates the absolute SVM coefficients weighted by node impurity reduction |
+
+---
+
+## Required Packages
+
+```r
+install.packages(c("data.table", "infotheo", "WeightSVM",
+                   "data.tree", "randomForest", "ggplot2"))
+```
+
+| Package | Role |
+|---|---|
+| `WeightSVM` | Fits the weighted SVM at each internal node |
+| `data.tree` | Stores and traverses the oblique tree structure |
+| `infotheo` | Mutual information computation (when `relation = "MI"`) |
+| `data.table` | Fast data manipulation inside the forest |
+
+Load the functions with:
+
+```r
+source("SWORD_functions/SWORD_Functions_ADAC.R")
+```
+
+---
+
+## Function Reference
+
+### SWORD -- fit the forest
+
+```r
+SWORD(
+  Covariates,
+  y,
+  nmin          = 5,
+  minleaf       = 2,
+  cp            = 0.0,
+  n_perc        = 1,
+  n_topCor      = 2,
+  threshold_COR = 1,
+  m             = 10,
+  rf_var        = ncol(Covariates),
+  rand_ntopcor  = TRUE,
+  relation      = "Pearson",
+  Weight_Scheme = "scale",
+  type_of_svm   = "C-classification",
+  cost_C        = 1,
+  cost_nu       = 0.5,
+  seed_BS       = 25,
+  parallel      = FALSE,
+  chunk         = FALSE,
+  n_chunks      = NULL,
+  OOB           = TRUE,
+  n_workers     = 1,
+  verbose       = FALSE,
+  timeout_tree  = 300
+)
+```
+
+#### Parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `Covariates` | `data.frame` | -- | Predictor matrix (numeric columns) |
+| `y` | `numeric` | -- | Response vector (same length as `nrow(Covariates)`) |
+| `nmin` | `integer` | `5` | Minimum node size to attempt a split; nodes with fewer observations become leaves |
+| `minleaf` | `integer` | `2` | Minimum number of observations allowed in each child node after a split |
+| `cp` | `numeric` | `0.0` | Complexity parameter: a split is accepted only if it reduces node deviance by at least `cp x root_deviance`. Set `0` to grow full trees |
+| `n_perc` | `integer` | `1` | Number of quantile thresholds evaluated per candidate split direction |
+| `n_topCor` | `integer` | `2` | Base cardinality of the feature subset used to define each oblique split (see also `rand_ntopcor`) |
+| `threshold_COR` | `numeric` | `1` | Minimum absolute correlation (or MI) required for a feature to enter the split candidate pool. `1` keeps all features; lower values pre-filter weakly correlated ones |
+| `m` | `integer` | `10` | Number of trees in the forest |
+| `rf_var` | `integer` | `ncol(Covariates)` | Number of predictors considered at each node before the W-SVM step. Default uses all features; set to `ceil(p/3)` for stronger randomisation (classic RF style) |
+| `rand_ntopcor` | `logical` | `TRUE` | If `TRUE`, the cardinality of the top-correlated subset is drawn uniformly in `[1, ncol()]` at each node (adds randomness); if `FALSE`, always uses exactly `n_topCor` features |
+| `relation` | `character` | `"Pearson"` | Dependency measure for feature ranking: `"Pearson"` (absolute Pearson correlation) or `"MI"` (mutual information via `infotheo`) |
+| `Weight_Scheme` | `character` | `"scale"` | Observation weighting scheme fed to the W-SVM: `"scale"` uses mean/sd of residuals; `"robust"` uses median/MAD (better with outliers) |
+| `type_of_svm` | `character` | `"C-classification"` | SVM formulation: `"C-classification"` (cost parameter `cost_C`) or `"nu-classification"` (parameter `cost_nu`) |
+| `cost_C` | `numeric` | `1` | SVM cost `C` when `type_of_svm = "C-classification"` |
+| `cost_nu` | `numeric` | `0.5` | SVM `nu` when `type_of_svm = "nu-classification"` |
+| `seed_BS` | `integer` | `25` | Seed offset for bootstrap sampling: tree `i` uses `set.seed(i + seed_BS)` |
+| `parallel` | `logical` | `FALSE` | Enable parallel tree construction via `furrr`/`future` |
+| `chunk` | `logical` | `FALSE` | Split the `m` trees into chunks before parallelising (reduces memory overhead) |
+| `n_chunks` | `integer\|NULL` | `NULL` | Number of chunks when `chunk = TRUE`; `NULL` = auto |
+| `OOB` | `logical` | `TRUE` | Compute out-of-bag predictions and error metrics (RMSE, MSE, MAE, R^2) |
+| `n_workers` | `integer` | `1` | Number of parallel workers (only used when `parallel = TRUE`) |
+| `verbose` | `logical` | `FALSE` | Print tree index to console during sequential runs |
+| `timeout_tree` | `numeric\|NULL` | `300` | Maximum seconds allowed per tree; trees that exceed the limit are skipped and flagged. Set `NULL` to disable |
+
+#### Returns
+
+A named list:
+
+```
+$trees               -- list of m fitted tree objects (NULL for skipped trees)
+$oob_predictions     -- vector of length n with OOB predictions (NA for observations never OOB)
+$MSE                 -- OOB mean squared error
+$RMSE                -- OOB root mean squared error
+$MAE                 -- OOB mean absolute error
+$Rsquared            -- OOB R^2
+$OOB_matrix          -- n x m matrix of per-tree OOB predictions (NA when observation was in-bag)
+$oob_errors_per_iter -- cumulative OOB RMSE after each tree is added
+$time_tree           -- elapsed seconds per tree
+$time_oob            -- elapsed seconds for OOB computation per tree
+$n_skipped           -- number of trees that were skipped due to timeout or error
+```
+
+> OOB metrics are only present when `OOB = TRUE` and at least one tree was fitted successfully.
+
+---
+
+### TORS -- fit a single tree
+
+```r
+TORS(
+  Covariates,
+  y,
+  nmin          = 5,
+  minleaf       = round(nmin / 3),
+  cp            = 0.0,
+  n_perc        = 1,
+  n_topCor      = 2,
+  threshold_COR = 1,
+  rf_var        = ncol(Covariates),
+  rand_ntopcor  = FALSE,
+  relation      = "Pearson",
+  Weight_Scheme = "scale",
+  type_of_svm   = "C-classification",
+  cost_C        = 1,
+  cost_nu       = 0.5
+)
+```
+
+Parameters are identical to `SWORD` (forest-specific options like `m`, `OOB`, `parallel`, etc. do not apply).
+Key differences from the forest call:
+
+| Parameter | Single tree default | Forest default | Reason |
+|---|---|---|---|
+| `rf_var` | `ncol(Covariates)` (all features) | `ncol(Covariates)` | All features considered at each node (paper default) |
+| `rand_ntopcor` | `FALSE` | `TRUE` | Deterministic split for a standalone tree |
+
+#### Returns
+
+A `data.tree` Node object representing the fitted oblique regression tree. Each internal node stores the W-SVM split coefficients; each leaf stores the mean response of its training observations.
+
+> **Reference:** Carta, A., Frigau, L. (2025). Tree oblique for regression with weighted support vector machine. *Computational Statistics*, 40, 5257--5291. https://doi.org/10.1007/s00180-025-01647-w
+
+---
+
+### Prediction functions
+
+#### Forest prediction
+
+```r
+# Standard (sequential)
+pred <- predict_SWORD(covariates, treeList)
+
+# Parallel (large forests / many observations)
+pred <- predict_SWORD_all(covariates, treeList,
+                          parallel = FALSE,
+                          n_cores  = parallel::detectCores() - 2)
+```
+
+| Argument | Description |
+|---|---|
+| `covariates` | `data.frame` of new observations (same columns as training `Covariates`) |
+| `treeList` | `$trees` element from the `SWORD()` output |
+
+Returns a numeric vector of predictions (one per row of `covariates`), obtained by averaging predictions across all valid trees.
+
+#### Single-tree prediction
+
+```r
+pred <- predict_TORS(covariates, tree, output = "mean")
+```
+
+| Argument | Description |
+|---|---|
+| `covariates` | `data.frame` of new observations |
+| `tree` | A `TORS()` fitted tree object |
+| `output` | `"mean"` (leaf mean) -- only option currently used |
+
+Returns a numeric vector of predictions.
+
+---
+
+### Variable Importance -- VI_SWORD
+
+```r
+vi <- VI_SWORD(foresta, parallel = FALSE, workers = 1)
+```
+
+Computes the **OIW-VI** (Oblique Impurity-Weighted Variable Importance):
+
+- For each tree, at each internal node, the absolute value of each feature's SVM coefficient is multiplied by the impurity reduction (deviance decrease) at that node.
+- Contributions are summed across all nodes and all trees, then averaged.
+
+| Argument | Description |
+|---|---|
+| `foresta` | The full object returned by `SWORD()` |
+| `parallel` | Use parallel computation (`furrr`) |
+| `workers` | Number of parallel workers |
+
+Returns a named numeric vector: one importance score per predictor column. Normalise to sum to 1 for plotting:
+
+```r
+vi_norm <- vi / sum(vi)
+```
+
+
+---
+
+### Utilities
+
+| Function | Description |
+|---|---|
+| `plot_SVM_ROT(tree, strip, use_scaled, digits, top_k)` | Visualises a single TORS/SVM.ROT tree using `data.tree` -- each node shows the split equation |
+| `Table_SVM.ROT_scaled(tree)` | Returns a `data.frame` of split hyperplane coefficients (scaled) for all internal nodes |
+| `Depth_tree(tree)` | Returns the depth of a fitted tree |
+| `N_of_Leafs(tree)` | Returns the number of leaf nodes |
+| `eq_string(betas, digits, top_k)` | Formats SVM coefficients as a human-readable equation string |
+
+---
+
+## Quick-Start Example
+
+The script `quick_test_SWORD_TORS.R` runs end-to-end on one simulated dataset.
+Below is an annotated walkthrough. All seeds are fixed for full reproducibility.
+
+### 1. Load functions and data
+
+```{r load-data}
+library(data.table); library(infotheo); library(WeightSVM)
+library(data.tree);  library(randomForest); library(ggplot2)
+
+source("SWORD_functions/SWORD_Functions_ADAC.R")
+
+load("Data/simulated_datasets_ADAC.rda")
+
+# Scenario: 500 obs, 10 features, 40% noise variables, 50% non-linearity
+df <- list_simulated_df[["seed_1"]][["500_n_obs"]][["10_n_feat"]][["0.4_Noise"]][["0.5_NoLin"]][["0_cat"]][["1_err"]]
+
+cat("Dataset:", nrow(df), "obs,", ncol(df) - 1, "features\n")
+```
+
+### 2. Train / test split (70 / 30)
+
+```{r split}
+y <- df[, 1];   X <- df[, -1, drop = FALSE]
+
+set.seed(42)
+train_idx <- sample(nrow(df), floor(0.7 * nrow(df)))
+test_idx  <- setdiff(seq_len(nrow(df)), train_idx)
+
+X_train <- X[train_idx, ]; y_train <- y[train_idx]
+X_test  <- X[test_idx,  ]; y_test  <- y[test_idx]
+
+cat("Train:", length(train_idx), "| Test:", length(test_idx), "\n")
+```
+
+### 3. Fit SWORD (forest, 100 trees)
+
+```{r sword}
+set.seed(1)
+sword_fit <- SWORD(
+  Covariates    = X_train,
+  y             = y_train,
+  nmin          = 5,
+  cp            = 0.0,
+  n_perc        = 1,
+  n_topCor      = 2,
+  threshold_COR = 1,
+  m             = 100,
+  rf_var        = ncol(X_train),
+  rand_ntopcor  = TRUE,
+  relation      = "Pearson",
+  Weight_Scheme = "scale",
+  type_of_svm   = "C-classification",
+  cost_C        = 1,
+  OOB           = TRUE,
+  parallel      = FALSE,
+  verbose       = FALSE
+)
+
+pred_sword <- predict_SWORD(X_test, sword_fit)
+rmse_sword <- sqrt(mean((pred_sword - y_test)^2))
+```
+
+### 4. Fit TORS (single tree)
+
+TORS is deterministic when `rand_ntopcor = FALSE`, so no additional seed is needed.
+
+```{r tors}
+tors_fit <- TORS(
+  Covariates    = X_train,
+  y             = y_train,
+  nmin          = 5,
+  cp            = 0.0,
+  n_perc        = 1,
+  n_topCor      = 2,
+  threshold_COR = 1,
+  rf_var        = ncol(X_train),
+  rand_ntopcor  = FALSE,
+  relation      = "Pearson",
+  Weight_Scheme = "scale",
+  type_of_svm   = "C-classification",
+  cost_C        = 1
+)
+
+pred_tors <- predict_TORS(X_test, tors_fit)
+rmse_tors <- sqrt(mean((pred_tors - y_test)^2))
+```
+
+### 5. Fit RF (benchmark)
+
+```{r rf}
+set.seed(2)
+rf_fit <- randomForest(
+  x     = X_train,
+  y     = y_train,
+  ntree = 100,
+  mtry  = ceiling(ncol(X_train) / 3)
+)
+
+pred_rf <- predict(rf_fit, X_test)
+rmse_rf <- sqrt(mean((pred_rf - y_test)^2))
+```
+
+### 6. Results
+
+#### RMSE comparison
+
+```{r rmse-table}
+results <- data.frame(
+  Model = c("SWORD", "TORS", "RF"),
+  RMSE  = round(c(rmse_sword, rmse_tors, rmse_rf), 4)
+)
+knitr::kable(results, align = "lr", caption = "Test-set RMSE (seed 42 / 1 / 2)")
+```
+
+#### Variable Importance: SWORD vs RF
+
+```{r vi-plot, fig.width = 8, fig.height = 4}
+vi_sword      <- VI_SWORD(sword_fit, parallel = FALSE)
+vi_sword_norm <- vi_sword / sum(vi_sword)
+
+vi_rf_norm    <- importance(rf_fit)[, "IncNodePurity"]
+vi_rf_norm    <- vi_rf_norm / sum(vi_rf_norm)
+
+make_vi_df <- function(vi_norm, model_label) {
+  data.frame(
+    variable = names(vi_norm),
+    VI       = as.numeric(vi_norm),
+    type     = ifelse(grepl("noise", names(vi_norm)), "Noise", "Informative"),
+    model    = model_label
+  )
+}
+
+vi_df          <- rbind(make_vi_df(vi_sword_norm, "SWORD"),
+                        make_vi_df(vi_rf_norm,    "RF"))
+var_order      <- names(sort(vi_sword_norm, decreasing = FALSE))
+vi_df$variable <- factor(vi_df$variable, levels = var_order)
+
+print(
+  ggplot(vi_df, aes(x = variable, y = VI, fill = type, alpha = model)) +
+    geom_bar(stat = "identity", position = position_dodge(width = 0.7), width = 0.6) +
+    scale_fill_manual(values = c("Informative" = "#2166ac", "Noise" = "#d73027")) +
+    scale_alpha_manual(values = c("SWORD" = 1, "RF" = 0.55)) +
+    coord_flip() +
+    facet_wrap(~ model, ncol = 2) +
+    labs(
+      title    = "Variable Importance: SWORD vs RF",
+      subtitle = sprintf("RMSE -- SWORD: %.4f  |  TORS: %.4f  |  RF: %.4f",
+                         rmse_sword, rmse_tors, rmse_rf),
+      x = NULL, y = "Normalized VI",
+      fill = "Variable type", alpha = "Model"
+    ) +
+    guides(alpha = "none") +
+    theme_bw(base_size = 13) +
+    theme(legend.position = "bottom")
+)
+```
+
+---
+
+## Parameter Tuning Guide
+
+| Goal | Parameter to change |
+|---|---|
+| Deeper trees / more flexible model | Decrease `nmin` (e.g., 3) or `cp` (keep at 0) |
+| Faster fitting | Decrease `m` (fewer trees) or enable `parallel = TRUE` |
+| More randomness (lower correlation between trees) | Decrease `rf_var` or enable `rand_ntopcor = TRUE` |
+| Robust to outliers | Set `Weight_Scheme = "robust"` |
+| Use mutual information instead of correlation | Set `relation = "MI"` (requires `infotheo`) |
+| Skip slow trees automatically | Set `timeout_tree = 60` (seconds) |
+| Reproducibility | Fix `seed_BS` (controls all bootstrap draws) |
+
+---
+
+## Output Structure
+
+```
+sword_fit
++-- $trees                 list of m tree objects
++-- $oob_predictions       numeric vector, length n
++-- $MSE / $RMSE / $MAE / $Rsquared   OOB metrics
++-- $OOB_matrix            n x m matrix (NA = in-bag for that tree)
++-- $oob_errors_per_iter   cumulative OOB RMSE trajectory
++-- $time_tree             elapsed seconds per tree
++-- $time_oob              OOB computation time per tree
++-- $n_skipped             integer, number of failed trees
+```
+
+Access OOB RMSE:
+
+```{r oob-rmse}
+cat("OOB RMSE:", sword_fit$RMSE, "\n")
+```
+
+Plot OOB RMSE convergence as trees are added:
+
+```{r oob-plot}
+plot(sword_fit$oob_errors_per_iter, type = "l",
+     xlab = "Number of trees", ylab = "OOB RMSE",
+     main = "SWORD -- OOB convergence")
+```
+
+---
+
+*Functions implemented in `SWORD_functions/SWORD_Functions_ADAC.R`.*
+*Paper: "Oblique Random Forests for Regression via Weighted Support Vector Machine", submitted to ADAC (Manuscript ID: ADAC-D-25-00591).*
