@@ -1,6 +1,6 @@
 ---
 title: "SWORD -- Quick-Start Guide"
-author: "Carta A., Frigau L."
+author: ", "
 output:
   html_document: default
   pdf_document: default
