@@ -1,6 +1,6 @@
 # ==============================================================================
 # SWORD & TORS -- Tutorial Code
-# Carta A., Frigau L.
+# 
 # Paper: "Oblique Random Forests for Regression via Weighted Support Vector Machine"
 # ADAC (Manuscript ID: ADAC-D-25-00591)
 # ------------------------------------------------------------------------------
