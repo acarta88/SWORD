@@ -161,8 +161,8 @@ print(
 
 # --- 8. OOB diagnostics (SWORD) -----------------------------------------------
 
-cat("OOB RMSE:", sword_fit$RMSE, "\n")
+cat("OOB MSE:", sword_fit$MSE, "\n")
 
 plot(sword_fit$oob_errors_per_iter, type = "l",
-     xlab = "Number of trees", ylab = "OOB RMSE",
+     xlab = "Number of trees", ylab = "OOB MSE",
      main = "SWORD -- OOB convergence")

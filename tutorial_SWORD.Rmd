@@ -467,14 +467,14 @@ sword_fit
 Access OOB RMSE:
 
 ```{r oob-rmse}
-cat("OOB RMSE:", sword_fit$RMSE, "\n")
+cat("OOB MSE:", sword_fit$MSE, "\n")
 ```
 
-Plot OOB RMSE convergence as trees are added:
+Plot OOB MSE convergence as trees are added:
 
 ```{r oob-plot}
 plot(sword_fit$oob_errors_per_iter, type = "l",
-     xlab = "Number of trees", ylab = "OOB RMSE",
+     xlab = "Number of trees", ylab = "OOB MSE",
      main = "SWORD -- OOB convergence")
 ```
 
